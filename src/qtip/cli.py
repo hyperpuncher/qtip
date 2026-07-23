@@ -9,6 +9,7 @@ import sys
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 MODEL = "MossFormer2_SE_48K"
@@ -98,7 +99,25 @@ def working_directory(path: Path) -> Iterator[None]:
         os.chdir(previous)
 
 
+def uses_rocm() -> bool:
+    try:
+        return "+rocm" in version("torch")
+    except PackageNotFoundError:
+        return False
+
+
+def configure_amdgpu_ids() -> None:
+    # ROCm's bundled libdrm does not find the system ID table automatically.
+    ids_directory = Path("/usr/share/libdrm")
+    if (ids_directory / "amdgpu.ids").is_file():
+        os.environ.setdefault("AMDGPU_ASIC_ID_TABLE_PATHS", str(ids_directory))
+
+
 def denoise(input_path: Path, output_path: Path) -> None:
+    rocm = uses_rocm()
+    if rocm:
+        configure_amdgpu_ids()
+
     import torch
     from clearvoice import ClearVoice
 
@@ -106,11 +125,12 @@ def denoise(input_path: Path, output_path: Path) -> None:
     cache.mkdir(parents=True, exist_ok=True)
 
     with working_directory(cache):
-        if torch.version.hip is not None and torch.cuda.is_available():
+        if rocm and torch.cuda.is_available():
             from unittest.mock import patch
 
             from clearvoice.networks import SpeechModel
 
+            # ClearVoice selects every torch GPU through Nvidia's nvidia-smi.
             with patch.object(SpeechModel, "get_free_gpu", return_value=0):
                 model = ClearVoice(task="speech_enhancement", model_names=[MODEL])
             device_name = f"rocm ({torch.cuda.get_device_name(0)})"
