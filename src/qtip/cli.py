@@ -99,15 +99,26 @@ def working_directory(path: Path) -> Iterator[None]:
 
 
 def denoise(input_path: Path, output_path: Path) -> None:
+    import torch
     from clearvoice import ClearVoice
 
     cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "qtip"
     cache.mkdir(parents=True, exist_ok=True)
 
     with working_directory(cache):
-        model = ClearVoice(task="speech_enhancement", model_names=[MODEL])
-        device = model.models[0].device
-        print(f"denoising on {device}...")
+        if torch.version.hip is not None and torch.cuda.is_available():
+            from unittest.mock import patch
+
+            from clearvoice.networks import SpeechModel
+
+            with patch.object(SpeechModel, "get_free_gpu", return_value=0):
+                model = ClearVoice(task="speech_enhancement", model_names=[MODEL])
+            device_name = f"rocm ({torch.cuda.get_device_name(0)})"
+        else:
+            model = ClearVoice(task="speech_enhancement", model_names=[MODEL])
+            device_name = str(model.models[0].device)
+
+        print(f"denoising on {device_name}...")
         enhanced = model(input_path=str(input_path), online_write=False)
         model.write(enhanced, output_path=str(output_path))
 
